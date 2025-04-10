@@ -1,0 +1,49 @@
+{
+  "name": "lambda-cal-vapi-integration",
+  "version": "1.0.0",
+  "description": "AWS Lambda function integrating Cal.com and VAPI for voice-based appointment booking",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "jest",
+    "start": "node src/local-server.js",
+    "static": "node src/static-server.js",
+    "proxy": "node src/proxy-server.js",
+    "dev": "concurrently \"npm run start\" \"npm run static\" \"npm run proxy\"",
+    "deploy": "serverless deploy",
+    "deploy:prod": "serverless deploy --stage production",
+    "setup": "node setup.js",
+    "postinstall": "chmod +x setup.js",
+    "ngrok": "ngrok http 3000",
+    "test:local": "node test-cal-direct.js",
+    "lint": "eslint .",
+    "logs": "serverless logs -f calVapiIntegration -t",
+    "zip": "zip -r function.zip . -x \"*.git*\" \"node_modules/.bin/*\" \"*.zip\" \"*.DS_Store\""
+  },
+  "keywords": [
+    "aws",
+    "lambda",
+    "cal.com",
+    "vapi",
+    "voice",
+    "booking"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.8.4",
+    "body-parser": "^2.2.0",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "jest": "^29.7.0",
+    "ngrok": "^5.0.0-beta.2",
+    "serverless": "^3.38.0",
+    "serverless-offline": "^13.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
