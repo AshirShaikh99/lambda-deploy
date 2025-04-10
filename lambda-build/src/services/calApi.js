@@ -98,24 +98,14 @@ const callCalApi = async (endpoint, options = {}) => {
 };
 
 // Get availability for a date range (v2 API - deprecated)
-const getAvailability = async (eventTypeId, startDate, endDate, timeZone = 'UTC') => {
-  // Ensure we have eventTypeId
-  if (!eventTypeId) {
-    throw new ValidationError('Event type ID is required', 'eventTypeId');
-  }
-
-  const username = config.cal.username || config.cal.userId;
-  if (!username) {
-    throw new ValidationError('Username is required', 'username');
-  }
-
-  const endpoint = `/v2/availability/${username}`;
+const getAvailability = async (startDate, endDate, duration = 30) => {
+  const endpoint = `/v2/availability/${config.cal.username || config.cal.userId}`;
 
   const params = {
-    eventTypeId: eventTypeId,
+    eventTypeId: config.cal.eventTypeId,
     startTime: startDate,
     endTime: endDate,
-    timeZone: timeZone
+    duration: duration
   };
 
   // Log the request for debugging
@@ -267,153 +257,51 @@ const getSlots = async (params = {}) => {
   }
 };
 
-/**
- * Create a new booking using Cal.com v1 API
- * @param {Object} params - Booking parameters
- * @param {string|number} params.eventTypeId - Event type ID
- * @param {string} params.start - Start time in ISO format
- * @param {Object} params.responses - Responses object with name, email, etc.
- * @param {string} params.timeZone - Time zone
- * @param {string} params.language - Language (default: en)
- * @param {string} params.apiKey - Cal.com API key (or use default from config)
- * @returns {Promise<Object>} - Response
- */
-const createBooking = async (params = {}) => {
-  // Validate required parameters
-  if (!params.start) {
-    throw new ValidationError('Start time is required', 'start');
+// Create a booking
+const createBooking = async (bookingData) => {
+  const endpoint = `/v2/bookings`;
+
+  // Validate required fields
+  if (!bookingData.name) {
+    throw new ValidationError('Name is required', 'name');
   }
-  if (!params.responses) {
-    throw new ValidationError('Responses are required', 'responses');
+  if (!bookingData.email) {
+    throw new ValidationError('Email is required', 'email');
   }
-  if (!params.responses.name) {
-    throw new ValidationError('Name is required', 'responses.name');
+  if (!bookingData.startTime) {
+    throw new ValidationError('Start time is required', 'startTime');
   }
-  if (!params.responses.email) {
-    throw new ValidationError('Email is required', 'responses.email');
-  }
-  if (!params.timeZone) {
-    throw new ValidationError('Time zone is required', 'timeZone');
-  }
-  if (!params.eventTypeId) {
-    throw new ValidationError('Event type ID is required', 'eventTypeId');
-  }
-  
-  // Get API key from params or config
-  const apiKey = params.apiKey || config.cal.apiKey;
-  if (!apiKey) {
-    throw new ValidationError('API key is required', 'apiKey');
-  }
-  
-  // Ensure responses.location has the proper format
-  if (!params.responses.location) {
-    params.responses.location = {
-      value: "integrations:daily",
-      optionValue: ""
-    };
-  } else if (typeof params.responses.location === 'string') {
-    params.responses.location = {
-      value: params.responses.location,
-      optionValue: ""
-    };
-  } else if (!params.responses.location.optionValue) {
-    params.responses.location.optionValue = "";
+  if (!bookingData.endTime) {
+    throw new ValidationError('End time is required', 'endTime');
   }
 
-  // Use the username from configuration
-  const username = params.username || config.cal.username || 'ashir-hassan-shaikh-gjcrzb';
+  // Default duration is from config or calculate from start/end times
+  const startTime = new Date(bookingData.startTime);
+  const endTime = new Date(bookingData.endTime);
+  const durationInMinutes = Math.round((endTime - startTime) / (60 * 1000));
 
-  // Fixed duration for this event type (in minutes)
-  const duration = 15;
-  
-  // Calculate end time based on start
-  const startDate = new Date(params.start);
-  const endDate = new Date(startDate.getTime() + duration * 60000);
-  
-  // Create a booking request object with proper format
-  const bookingData = {
-    eventTypeId: typeof params.eventTypeId === 'string' ? parseInt(params.eventTypeId, 10) : params.eventTypeId,
-    username: username,
-    start: params.start,
-    end: params.end || endDate.toISOString(),
-    responses: params.responses,
-    timeZone: params.timeZone,
-    language: params.language || 'en',
-    status: params.status || 'ACCEPTED', 
-    metadata: params.metadata || { source: 'lambda-cal-vapi-integration' }
+  // Prepare booking payload
+  const payload = {
+    eventTypeId: parseInt(config.cal.eventTypeId, 10),
+    start: bookingData.startTime,
+    end: bookingData.endTime,
+    duration: bookingData.duration || durationInMinutes || config.app.defaultDuration,
+    name: bookingData.name,
+    email: bookingData.email,
+    phone: bookingData.phone || '',
+    timeZone: bookingData.timeZone || config.app.timeZone,
+    language: bookingData.language || 'en',
+    metadata: {
+      ...(bookingData.metadata || {}),
+      source: 'vapi-integration'
+    },
+    ...(bookingData.rescheduleUid ? { rescheduleUid: bookingData.rescheduleUid } : {})
   };
 
-  // Log the request (careful not to expose sensitive data)
-  console.log('Cal.com booking request:', {
-    url: `${config.cal.apiUrl}/v1/bookings?apiKey=${apiKey.substr(0, 4)}****${apiKey.substr(-4)}`,
+  return callCalApi(endpoint, {
     method: 'POST',
-    eventTypeId: bookingData.eventTypeId,
-    start: bookingData.start,
-    end: bookingData.end
+    body: payload
   });
-
-  try {
-    // Make direct fetch request to handle authorization properly
-    const url = `${config.cal.apiUrl}/v1/bookings?apiKey=${apiKey}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(bookingData)
-    });
-
-    // Parse the response
-    let data;
-    try {
-      data = await response.json();
-    } catch (error) {
-      console.error('Error parsing JSON response:', error);
-      throw new Error('Invalid response from Cal.com API');
-    }
-
-    // Check for error response
-    if (!response.ok) {
-      console.error('Cal.com API error:', {
-        status: response.status,
-        statusText: response.statusText,
-        data,
-        requestPayload: JSON.stringify(bookingData, null, 2)
-      });
-      
-      if (response.status === 401) {
-        throw new AuthError(`Authentication failed: ${data.message || 'Invalid API key'}`);
-      } else if (response.status === 404) {
-        throw new NotFoundError('Resource not found', 'Cal.com API');
-      } else if (response.status === 400) {
-        const errorMsg = data.message || (data.error?.message || 'Validation error');
-        throw new ValidationError(`Invalid request: ${errorMsg}`, data.error?.field || 'unknown');
-      } else {
-        const error = new Error(`Cal.com API error (${response.status}): ${data.message || data.error?.message || 'Unknown error'}`);
-        error.statusCode = response.status;
-        error.details = data;
-        throw error;
-      }
-    }
-
-    return data;
-  } catch (error) {
-    console.error('Error creating booking with Cal.com API:', error);
-    
-    // If error is already a custom error, just rethrow it
-    if (error instanceof ValidationError || 
-        error instanceof NotFoundError ||
-        error instanceof AuthError) {
-      throw error;
-    }
-    
-    // Otherwise wrap in ApiError
-    const apiError = new Error(error.message || 'Error creating booking');
-    apiError.statusCode = error.statusCode || 500;
-    apiError.details = error.details || error;
-    apiError.source = 'cal';
-    throw apiError;
-  }
 };
 
 // Reschedule a booking

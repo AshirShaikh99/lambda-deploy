@@ -4,23 +4,6 @@ const calApi = require('./services/calApi');
 const vapiService = require('./services/vapiService');
 const config = require('./config');
 
-// Create default logger
-const logger = addRequestContext('default');
-
-// Define valid actions that can be used in the API
-const VALID_ACTIONS = [
-  'createBooking', 
-  'getAvailableSlots', 
-  'rescheduleBooking', 
-  'cancelBooking', 
-  'getBookingDetails', 
-  'checkAvailability',
-  'findAvailability',
-  'handleVapiWebhook',
-  'initializeAssistant',
-  'trialStarted'
-];
-
 /**
  * Main Lambda handler function
  * @param {Object} event - AWS Lambda event
@@ -29,140 +12,60 @@ const VALID_ACTIONS = [
  */
 exports.handler = async (event, context) => {
   // Create request-specific logger
-  const requestId = context ? context.awsRequestId : Date.now().toString();
+  const requestId = context.awsRequestId;
   const log = addRequestContext(requestId);
 
   try {
     log.info('Lambda function invoked', { event });
 
-    // Handle OPTIONS requests for CORS
-    if (event.httpMethod === 'OPTIONS') {
-      return {
-        statusCode: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type'
-        },
-        body: JSON.stringify({ success: true })
-      };
-    }
-
-    // Parse request body - handle different formats
+    // Parse request body - handle both string and object formats
     let body = {};
     if (event.body) {
-      try {
-        body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-      } catch (error) {
-        log.warn('Could not parse request body as JSON', { body: event.body, error: error.message });
-      }
+      body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     }
 
-    // Handle direct Lambda URL invocations where action might be in the path
-    const pathParts = event.path ? event.path.split('/').filter(Boolean) : [];
-    const lastPathPart = pathParts.length > 0 ? pathParts[pathParts.length - 1] : '';
-
-    // Extract query parameters
-    const queryParams = event.queryStringParameters || {};
-    
-    // IMPORTANT FIX: Determine the action from multiple possible sources with proper priority
-    // Priority: 1. Query param, 2. Path part, 3. Body field, 4. Default
-    let action;
-    
-    // Direct path check first (more specific)
-    if (lastPathPart === 'createBooking' || event.path === '/createBooking') {
-      action = 'createBooking';
-    } 
-    // Then query param
-    else if (queryParams.action) {
-      action = queryParams.action;
-    } 
-    // URL path has third priority
-    else if (lastPathPart) {
-      const knownActions = ['createBooking', 'getAvailableSlots', 'rescheduleBooking', 
-                         'cancelBooking', 'getBookingDetails', 'checkAvailability'];
-                         
-      if (knownActions.includes(lastPathPart)) {
-        action = lastPathPart;
-      } else {
-        action = 'handleVapiWebhook'; // Only use webhook as fallback for unknown paths
-      }
-    } 
-    // Body field has last priority
-    else if (body.action) {
-      action = body.action;
-    } 
-    // Default fallback
-    else {
-      action = 'handleVapiWebhook';
-    }
-    
     // Copy all properties from request body to params for consistent handling
     const params = { ...body };
+
+    // Extract query parameters - handle different formats for Lambda URL vs API Gateway
+    const queryParams = event.queryStringParameters || {};
+    
+    // Determine the action to take based on the request - check multiple sources
+    const action = queryParams.action || body.action || 'handleVapiWebhook';
     
     // Add action to params if not already present
     if (!params.action) {
       params.action = action;
     }
 
-    // Copy query parameters into params too (lower priority than body)
-    Object.keys(queryParams).forEach(key => {
-      if (!params[key]) {
-        params[key] = queryParams[key];
-      }
-    });
-
     // Log the action and params
-    log.info(`Processing action: ${action}`, { params: JSON.stringify(params) });
+    log.info(`Processing action: ${action}`, { params });
 
     // Route to the appropriate handler based on the action
-    let result;
     switch (action) {
       case 'initializeAssistant':
-        result = await initializeAssistant(params, log);
-        break;
+        return await initializeAssistant(params, log);
       case 'trialStarted':
-        result = await handleTrialStarted(params, log);
-        break;
+        return await handleTrialStarted(params, log);
       case 'handleVapiWebhook':
-        result = await handleVapiWebhook(params, log);
-        break;
+        return await handleVapiWebhook(params, log);
       case 'checkAvailability':
-        result = await checkAvailability(params, log);
-        break;
+        return await checkAvailability(params, log);
       case 'findAvailability':
-        result = await findAvailability(params, log);
-        break;
+        return await findAvailability(params, log);
       case 'getAvailableSlots':
-        result = await getAvailableSlots(params, log);
-        break;
+        return await getAvailableSlots(params, log);
       case 'createBooking':
-        result = await createBooking(params, log);
-        break;
+        return await createBooking(params, log);
       case 'rescheduleBooking':
-        result = await rescheduleBooking(params, log);
-        break;
+        return await rescheduleBooking(params, log);
       case 'cancelBooking':
-        result = await cancelBooking(params, log);
-        break;
+        return await cancelBooking(params, log);
       case 'getBookingDetails':
-        result = await getBookingDetails(params, log);
-        break;
+        return await getBookingDetails(params, log);
       default:
         throw new ValidationError('Invalid action specified', 'action');
     }
-
-    // Ensure CORS headers are always present
-    if (!result.headers) {
-      result.headers = {};
-    }
-    
-    result.headers['Access-Control-Allow-Origin'] = '*';
-    result.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS';
-    result.headers['Access-Control-Allow-Headers'] = 'Content-Type';
-    
-    return result;
   } catch (error) {
     return handleError(error, log);
   }
@@ -595,43 +498,47 @@ const findAvailability = async (params, log) => {
  * @returns {Promise<Object>} - Response with available slots
  */
 const getAvailableSlots = async (params, log) => {
-  log.info('Getting available slots', { params: JSON.stringify(params) });
+  log.info('Getting available slots', { params });
 
   try {
-    // Validate and normalize parameters to handle multiple possible formats
-    let startTime = params.startTime || params.startDate || params.start;
-    let endTime = params.endTime || params.endDate || params.end;
+    // Validate required parameters
+    let startTime = params.startTime;
+    let endTime = params.endTime;
     
-    // Handle when startTime is not provided
     if (!startTime) {
-      // If no start time, use today
-      const today = new Date();
-      startTime = today.toISOString();
-      log.info('Using default start time (today)', { startTime });
+      // Fallback to startDate if startTime is not provided
+      startTime = params.startDate;
+      
+      if (!startTime) {
+        // If no start time, use today
+        const today = new Date();
+        startTime = today.toISOString();
+        log.info('Using default start time (today)', { startTime });
+      }
     }
     
-    // Handle when endTime is not provided
     if (!endTime) {
-      // If no end time, use two weeks from start time
-      const start = new Date(startTime);
-      const end = new Date(start);
-      end.setDate(start.getDate() + 14);
-      endTime = end.toISOString();
-      log.info('Using default end time (start + 14 days)', { endTime });
+      // Fallback to endDate if endTime is not provided
+      endTime = params.endDate;
+      
+      if (!endTime) {
+        // If no end time, use two weeks from start time
+        const start = new Date(startTime);
+        const end = new Date(start);
+        end.setDate(start.getDate() + 14);
+        endTime = end.toISOString();
+        log.info('Using default end time (start + 14 days)', { endTime });
+      }
     }
 
-    // Get API key from parameters or environment
-    const apiKey = params.apiKey || params.api_key || config.cal.apiKey;
-    if (apiKey && apiKey !== config.cal.apiKey) {
+    // Override API key if provided in the params
+    if (params.apiKey) {
       log.info('Using custom API key for this request');
-      config.cal.apiKey = apiKey;
+      config.cal.apiKey = params.apiKey;
     }
 
-    // Get event type ID from parameters or environment
-    const eventTypeId = params.eventTypeId || params.event_type_id || config.cal.eventTypeId;
-    if (!eventTypeId) {
-      throw new ValidationError('Event type ID is required', 'eventTypeId');
-    }
+    // Override event type ID if provided in the params
+    const eventTypeId = params.eventTypeId || config.cal.eventTypeId;
     
     // Prepare parameters for the slots API
     const apiParams = {
@@ -640,13 +547,6 @@ const getAvailableSlots = async (params, log) => {
       eventTypeId: eventTypeId,
       apiKey: config.cal.apiKey
     };
-
-    log.info('Calling Cal.com API with params', { 
-      startTime, 
-      endTime, 
-      eventTypeId,
-      apiKey: apiKey ? '****' + apiKey.slice(-4) : 'not set' 
-    });
 
     // Get available slots
     const slots = await calApi.getSlots(apiParams);
@@ -665,7 +565,6 @@ const getAvailableSlots = async (params, log) => {
       })
     };
   } catch (error) {
-    log.error('Error getting slots', { error: error.message, stack: error.stack });
     return handleError(error, log);
   }
 };
@@ -678,136 +577,234 @@ const getAvailableSlots = async (params, log) => {
  */
 const createBooking = async (params, log) => {
   log.info('Creating booking', { params });
-  console.log('createBooking input:', JSON.stringify(params, null, 2));
+
+  const { name, email, startTime, endTime, timeZone, notes, guests, location } = params;
+
+  if (!name || !email || !startTime || !timeZone) {
+    throw new ValidationError('Missing required parameters', 'params', {
+      required: ['name', 'email', 'startTime', 'timeZone'],
+    });
+  }
+
+  // Validate that the booking date is in the future
+  let bookingDate = new Date(startTime);
+  const now = new Date();
+
+  log.info('Validating booking date', { bookingDate, now, bookingDateISO: bookingDate.toISOString(), nowISO: now.toISOString() });
+
+  // Check if the date is from a past year (like 2023)
+  const isPastYear = bookingDate.getFullYear() < now.getFullYear();
+
+  // Check if the date is in the past
+  const isPastDate = bookingDate <= now;
+
+  if (isPastYear || isPastDate) {
+    log.warn('Detected past date for booking', { bookingDate, now, isPastYear, isPastDate });
+
+    // Create an adjusted date
+    let adjustedDate;
+
+    if (isPastYear) {
+      // If it's a past year, use the same month/day/time but in the current year
+      adjustedDate = new Date(bookingDate);
+      adjustedDate.setFullYear(now.getFullYear());
+
+      // If it's still in the past after setting the current year, add one year
+      if (adjustedDate <= now) {
+        adjustedDate.setFullYear(now.getFullYear() + 1);
+      }
+    } else {
+      // If it's just a past date in the current year, schedule for tomorrow at the same time
+      adjustedDate = new Date(now);
+      adjustedDate.setDate(now.getDate() + 1);
+      adjustedDate.setHours(bookingDate.getHours(), bookingDate.getMinutes(), 0, 0);
+    }
+
+    // Log the date adjustment details
+    log.info('Date adjustment details', {
+      originalDate: bookingDate.toLocaleString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric'
+      }),
+      adjustedDate: adjustedDate.toLocaleString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric'
+      })
+    });
+
+    log.info('Automatically adjusting booking to future date', {
+      originalDate: bookingDate.toISOString(),
+      adjustedDate: adjustedDate.toISOString()
+    });
+
+    // Update the booking date to the adjusted date
+    bookingDate = adjustedDate;
+    const adjustedStartTime = adjustedDate.toISOString();
+
+    // Update the parameters with the adjusted date
+    params.startTime = adjustedStartTime;
+    if (params.endTime) {
+      // If endTime is provided, adjust it by the same amount
+      const originalEndTime = new Date(endTime);
+      const timeDiff = originalEndTime - bookingDate;
+      const adjustedEndTime = new Date(adjustedDate.getTime() + timeDiff);
+      params.endTime = adjustedEndTime.toISOString();
+    }
+
+    log.info('Booking parameters adjusted for future date', {
+      originalStartTime: startTime,
+      adjustedStartTime: params.startTime,
+      originalEndTime: endTime,
+      adjustedEndTime: params.endTime
+    });
+  }
+
+  // Get event type details from config
+  const eventTypeId = params.eventTypeId || config.cal.eventTypeId;
+
+  // Use the slug from config or default to "secret" (as seen in test-cal-api.js)
+  const eventTypeSlug = "secret";
 
   try {
-    // Directly pass through the request in Cal.com v1 API format
-    if (params.eventTypeId && params.start && params.responses && params.timeZone) {
-      console.log('Request already in Cal.com v1 API format, passing through directly');
-      
-      // Ensure apiKey is present
-      params.apiKey = params.apiKey || config.cal.apiKey;
-      
-      console.log('Creating booking with Cal.com API...');
-      const booking = await calApi.createBooking(params);
-      
-      console.log('Booking created successfully!', booking);
+    // First, check if the requested time slot is available
+    // Get the date from the startTime
+    const requestedDate = new Date(startTime);
+    const startDate = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate() - 1).toISOString().split('T')[0];
+    const endDate = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate() + 1).toISOString().split('T')[0];
+
+    log.info('Checking availability before booking', { startDate, endDate, timeZone });
+    const availability = await calApi.getAvailability(eventTypeId, startDate, endDate, timeZone);
+    const formattedAvailability = calApi.formatAvailabilityForVoice(availability);
+
+    // Check if the requested time slot is available
+    const isAvailable = calApi.isTimeSlotAvailable(formattedAvailability, startTime);
+
+    if (!isAvailable) {
+      log.info('Requested time slot is not available, finding alternatives', { startTime });
+
+      // Find alternative time slots
+      const alternativeSlots = calApi.findAlternativeTimeSlots(formattedAvailability, startTime, 5);
+
       return {
-        statusCode: 200,
+        statusCode: 409, // Conflict - the requested resource couldn't be created due to a conflict
         body: JSON.stringify({
-          success: true,
-          booking,
-          message: 'Booking created successfully'
+          success: false,
+          error: 'Requested time slot is not available',
+          alternativeSlots: alternativeSlots,
+          message: 'The requested time slot is not available. Please choose from the alternative slots provided.',
         }),
       };
     }
-    
-    // Legacy format handling (convert to v1 format)
-    console.log('Converting legacy format to Cal.com v1 API format');
-    
-    // Validate required fields
-    if (!params.name) {
-      throw new ValidationError('Name is required', 'name');
-    }
-    if (!params.email) {
-      throw new ValidationError('Email is required', 'email');
-    }
-    if (!params.startTime) {
-      throw new ValidationError('Start time is required', 'startTime');
-    }
-    if (!params.eventTypeId) {
-      throw new ValidationError('Event type ID is required', 'eventTypeId');
-    }
-    if (!params.timeZone) {
-      throw new ValidationError('Time zone is required', 'timeZone');
-    }
-    
-    // Get API key and event type ID
-    const apiKey = params.apiKey || config.cal.apiKey;
-    const eventTypeId = params.eventTypeId;
-    
-    // Get start and end times
-    const startTime = params.startTime;
-    let endTime = params.endTime;
-    
-    // Calculate end time if not provided
-    if (!endTime) {
-      const duration = params.duration || config.app.defaultDuration || 30; // default to 30 min
-      endTime = new Date(new Date(startTime).getTime() + duration * 60000).toISOString();
-    }
-    
-    // Create booking data in Cal.com v1 format
-    const bookingData = {
-      eventTypeId: typeof eventTypeId === 'string' ? parseInt(eventTypeId, 10) : eventTypeId,
-      start: startTime,
-      end: endTime,
-      responses: {
-        name: params.name,
-        email: params.email,
-        location: params.location ? { value: params.location } : { value: "integrations:daily" },
-        notes: params.notes || '',
-        guests: params.guests || []
-      },
-      timeZone: params.timeZone,
-      language: params.language || 'en',
-      title: params.title,
-      description: params.description,
-      status: params.status || "ACCEPTED",
-      metadata: params.metadata || { source: 'lambda-integration' },
-      apiKey: apiKey
+
+    // Format booking data according to Cal.com API v2 documentation
+    const bookingDetails = {
+      eventTypeId: eventTypeId,
+      eventTypeSlug: eventTypeSlug,
+      name,
+      email,
+      startTime,
+      endTime,
+      timeZone,
+      notes,
+      metadata: {
+        source: 'lambda-cal-vapi-integration',
+        created: new Date().toISOString()
+      }
     };
-    
-    console.log('Converted to Cal.com v1 API format:', JSON.stringify(bookingData, null, 2));
-    
-    // Call the Cal.com API
-    try {
-      const booking = await calApi.createBooking(bookingData);
-      
-      return {
-        statusCode: 200,
-        body: JSON.stringify({
-          success: true,
-          booking,
-          message: 'Booking created successfully'
-        }),
-      };
-    } catch (error) {
-      // Handle specific Cal.com API errors
-      if (error instanceof ApiError || error.source === 'cal') {
-        log.error('Cal.com API error', { error });
-        
-        // Handle specific error cases
-        if (error.statusCode === 409 || 
-            (error.details && error.details.message && 
-             error.details.message.includes('already booked'))) {
-          // Time slot already booked error
-          return {
-            statusCode: 409,
-            body: JSON.stringify({
-              success: false,
-              error: 'Requested time slot is not available',
-              message: 'The requested time slot is not available. Please choose a different time.',
-            }),
-          };
-        }
-        
-        // Generic API error
+
+    // Add optional parameters if provided
+    if (guests && Array.isArray(guests) && guests.length > 0) {
+      bookingDetails.guests = guests;
+    }
+
+    if (location) {
+      bookingDetails.location = location;
+    }
+
+    log.info('Sending booking details to Cal.com', { bookingDetails });
+    const booking = await calApi.createBooking(bookingDetails);
+
+    // Check if we adjusted the date
+    let responseMessage = 'Booking created successfully';
+    let dateAdjusted = false;
+
+    // If we adjusted a past date to a future date, include that information in the response
+    if (startTime !== params.startTime) {
+      dateAdjusted = true;
+      const originalDate = new Date(startTime).toLocaleString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric'
+      });
+
+      const adjustedDate = new Date(params.startTime).toLocaleString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric'
+      });
+
+      responseMessage = `Booking created successfully. Note: Your requested date (${originalDate}) was in the past, so we've scheduled your appointment for ${adjustedDate} instead.`;
+    }
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        success: true,
+        booking,
+        message: responseMessage,
+        dateAdjusted,
+        originalDate: startTime,
+        adjustedDate: params.startTime
+      }),
+    };
+  } catch (error) {
+    log.error('Error creating booking', { error });
+
+    // If this is a Cal.com API error about the time slot not being available
+    if (error.source === 'cal' && error.statusCode === 400 &&
+        error.details?.error?.message?.includes('already has booking at this time or is not available')) {
+
+      // Get availability for a wider date range to suggest alternatives
+      const requestedDate = new Date(startTime);
+      const startDate = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate() - 3).toISOString().split('T')[0];
+      const endDate = new Date(requestedDate.getFullYear(), requestedDate.getMonth(), requestedDate.getDate() + 7).toISOString().split('T')[0];
+
+      try {
+        const availability = await calApi.getAvailability(eventTypeId, startDate, endDate, timeZone);
+        const formattedAvailability = calApi.formatAvailabilityForVoice(availability);
+        const alternativeSlots = calApi.findAlternativeTimeSlots(formattedAvailability, startTime, 5);
+
         return {
-          statusCode: error.statusCode || 500,
+          statusCode: 409, // Conflict
           body: JSON.stringify({
             success: false,
-            error: error.message || 'Error creating booking',
-            details: error.details || {},
+            error: 'Requested time slot is not available',
+            alternativeSlots: alternativeSlots,
+            message: 'The requested time slot is not available. Please choose from the alternative slots provided.',
           }),
         };
+      } catch (availabilityError) {
+        log.error('Error getting alternative slots', { availabilityError });
+        // Fall through to the generic error handler
       }
-      
-      // Rethrow other errors to be handled by the global error handler
-      throw error;
     }
-  } catch (error) {
-    log.error('Error creating booking', { error: error.message, stack: error.stack });
-    return handleError(error, log);
+
+    // Re-throw the error to be handled by the global error handler
+    throw error;
   }
 };
 
@@ -905,118 +902,4 @@ const getBookingDetails = async (params, log) => {
       booking,
     }),
   };
-};
-
-const determineAction = (event) => {
-  // Check for action in query parameters
-  if (event.queryStringParameters && event.queryStringParameters.action) {
-    return event.queryStringParameters.action;
-  }
-
-  // Check for action in path
-  const pathParts = event.path.split('/').filter(Boolean);
-  if (pathParts.length > 0) {
-    const lastPathPart = pathParts[pathParts.length - 1];
-    if (VALID_ACTIONS.includes(lastPathPart)) {
-      return lastPathPart;
-    }
-  }
-
-  // Check for action in body
-  if (event.body) {
-    try {
-      const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-      if (body.action && VALID_ACTIONS.includes(body.action)) {
-        return body.action;
-      }
-    } catch (error) {
-      console.error('Error parsing request body:', error);
-    }
-  }
-
-  // Default to getAvailability
-  return 'getAvailability';
-};
-
-// Helper function to format booking data for Cal.com API v1
-const formatBookingData = (params) => {
-  // Log the incoming parameters
-  console.log('formatBookingData input:', JSON.stringify(params, null, 2));
-
-  // Check for v1 format (has 'responses' field directly)
-  if (params.responses && params.start && params.eventTypeId) {
-    console.log('Request is already in Cal.com v1 format');
-    const formattedData = {
-      ...params,
-      // Ensure the timeZone is set
-      timeZone: params.timeZone || 'UTC'
-    };
-    console.log('Returning v1 formatted data:', JSON.stringify(formattedData, null, 2));
-    return formattedData;
-  }
-
-  console.log('Converting legacy format to Cal.com v1 format');
-
-  // Validate required fields
-  if (!params.name) {
-    console.log('Validation error: Name is required');
-    throw new ValidationError('Name is required', 'name');
-  }
-  if (!params.email) {
-    console.log('Validation error: Email is required');
-    throw new ValidationError('Email is required', 'email');
-  }
-  if (!params.startTime) {
-    console.log('Validation error: Start time is required');
-    throw new ValidationError('Start time is required', 'startTime');
-  }
-  if (!params.eventTypeId) {
-    console.log('Validation error: Event type ID is required');
-    throw new ValidationError('Event type ID is required', 'eventTypeId');
-  }
-
-  // Ensure we're booking future dates
-  const bookingDate = new Date(params.startTime);
-  const now = new Date();
-  if (bookingDate < now) {
-    console.log('Booking date is in the past, adjusting to future', {
-      originalDate: params.startTime,
-      now: now.toISOString()
-    });
-    
-    // Adjust booking to tomorrow at same time
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(bookingDate.getHours());
-    tomorrow.setMinutes(bookingDate.getMinutes());
-    tomorrow.setSeconds(0);
-    tomorrow.setMilliseconds(0);
-    
-    params.startTime = tomorrow.toISOString();
-    console.log('Adjusted booking date to future', { adjustedDate: params.startTime });
-  }
-
-  // Create booking data in Cal.com v1 format
-  const formattedData = {
-    eventTypeId: params.eventTypeId,
-    start: params.startTime,
-    timeZone: params.timeZone || 'UTC',
-    apiKey: params.apiKey,
-    responses: {
-      name: params.name,
-      email: params.email,
-      guests: params.guests || [],
-      location: params.location || { optionValue: "", value: "" },
-      notes: params.notes || '',
-    },
-    metadata: params.metadata || {}
-  };
-
-  // Add additional fields if provided
-  if (params.endTime) {
-    formattedData.end = params.endTime;
-  }
-
-  console.log('Legacy format converted to v1:', JSON.stringify(formattedData, null, 2));
-  return formattedData;
 };

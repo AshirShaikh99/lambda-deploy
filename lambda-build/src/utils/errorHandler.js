@@ -30,7 +30,7 @@ class AuthError extends Error {
 }
 
 /**
- * Handle errors consistently with proper response format for Lambda URL
+ * Handle errors consistently
  * @param {Error} error - Error object
  * @param {Object} log - Logger
  * @returns {Object} - Response with error details
@@ -69,14 +69,14 @@ const handleError = (error, log) => {
     errorResponse.resource = error.resource;
   }
   
-  // Return standard format response with CORS headers for Lambda URL
+  // Return standard format response
   return {
     statusCode,
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
     },
     body: JSON.stringify(errorResponse)
   };
